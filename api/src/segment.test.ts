@@ -14,8 +14,8 @@ async function fixture() {
 
 async function insert(runId:number, seatId:number, start:number, end:number) {
   return pool.query(`INSERT INTO bookings
-    (reference,run_id,seat_id,origin_station_id,destination_station_id,segment,passenger_name,passenger_email,fare_cents,currency)
-    SELECT $1,$2,$3,ro.station_id,rd.station_id,int4range($4,$5,'[)'),'Test Passenger',$6,1000,r.currency
+    (reference,run_id,seat_id,origin_station_id,destination_station_id,segment,clerk_user_id,passenger_name,passenger_email,fare_lkr,currency)
+    SELECT $1,$2,$3,ro.station_id,rd.station_id,int4range($4,$5,'[)'),'test-user','Test Passenger',$6,1000,r.currency
     FROM service_runs sr JOIN routes r ON r.id=sr.route_id
     JOIN route_stations ro ON ro.route_id=r.id AND ro.position=$4
     JOIN route_stations rd ON rd.route_id=r.id AND rd.position=$5
@@ -29,7 +29,7 @@ describe('database booking invariant', () => {
     const outcomes=await Promise.allSettled([insert(f.run_id,f.seat_id,0,5),insert(f.run_id,f.seat_id,3,8)]);
     expect(outcomes.filter(x=>x.status==='fulfilled')).toHaveLength(1);
     const rejected=outcomes.find(x=>x.status==='rejected') as PromiseRejectedResult;
-    expect(rejected.reason.constraint).toBe('no_overlapping_confirmed_bookings');
+    expect(rejected.reason.constraint).toBe('no_overlapping_active_allocations');
   });
 
   it('allows adjacent legs on the same physical seat', async () => {

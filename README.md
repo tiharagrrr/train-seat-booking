@@ -1,89 +1,153 @@
-# Segment-based train seat booking
+# Udarata Rail — segment-based seat booking
 
-A React, Node.js, and PostgreSQL reference implementation for reselling the same physical reserved seat across non-overlapping legs of one train run.
+Production-minded React, Express, and PostgreSQL implementation for independently selling non-overlapping legs of one physical train seat. It includes Clerk authentication, admin train/timetable configuration, cancellations, a fair waitlist with expiring offers, ticket email/QR delivery, whole-rupee LKR fares, and database-enforced concurrency safety.
 
-## Run with one command
+## What you must configure
 
-Prerequisite: Docker Desktop or Docker Engine with Compose.
+### 1. Clerk
+
+1. Create an application at https://dashboard.clerk.com.
+2. Enable email sign-in. Passengers use personal accounts.
+3. Enable Organizations and disable public organization creation.
+4. Create an organization named `Sri Lanka Railways`.
+5. Create feature `rail` and two custom permissions:
+   - `org:rail:admin`
+   - `org:rail:view`
+6. Keep two organization roles:
+   - **Admin:** assign both permissions. Admins can view data and change templates, coaches, seats, timetables, dates, fares, waitlist policy, and bookings.
+   - **Viewer:** assign only `org:rail:view`. Viewers can inspect dashboards, configuration, and verify QR tickets, but cannot change data.
+7. Invite staff into the organization and assign one of those roles. Passengers must not be organization members.
+8. Copy the React publishable key and backend secret key into `.env`.
+
+The API checks permissions server-side. Hiding an admin button in React is not treated as security.
+
+### 2. Resend
+
+1. Create an account at https://resend.com.
+2. Verify a sending domain.
+3. Create an API key.
+4. Set `RESEND_API_KEY` and an `EMAIL_FROM` address on the verified domain.
+
+Without a Resend key, local development still works: the worker logs email events and marks them delivered through the development console transport.
+
+### 3. Environment
 
 ```bash
 cp .env.example .env
-# Change POSTGRES_PASSWORD in .env for any non-local environment.
-docker compose up --build
 ```
 
-Open `http://localhost:5173`. The API is at `http://localhost:4000`; `GET /health` reports readiness. PostgreSQL creates the schema and demonstration route only on the first start. To deliberately reset local demo data:
+Replace at minimum:
+
+```env
+POSTGRES_PASSWORD=a-long-local-password
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+CLERK_AUTHORIZED_PARTIES=http://localhost:5173
+RESEND_API_KEY=re_...
+EMAIL_FROM=Udarata Rail <tickets@your-domain.lk>
+PUBLIC_APP_URL=http://localhost:5173
+```
+
+Never commit `.env`. The Vite publishable key is intentionally public; the Clerk secret and Resend key must only be supplied to the API/worker.
+
+## One-command startup
+
+Prerequisite: Docker Desktop or Docker Engine with Compose.
+
+This release replaces the original schema. If you ran an earlier version, recreate the local database once:
 
 ```bash
 docker compose down -v
 docker compose up --build
 ```
 
-## Local development without containerized app services
+Open http://localhost:5173. The API health endpoint is http://localhost:4000/health.
 
-Start PostgreSQL with `docker compose up db`, copy `.env.example` to `.env`, then:
+Future code-only updates normally need:
 
 ```bash
+docker compose up --build
+```
+
+Do not use `-v` again unless you deliberately want to erase all local bookings and configuration.
+
+## Faster development
+
+```bash
+docker compose up db
 npm install
 npm run dev
 ```
 
-With the database running, execute the real PostgreSQL concurrency tests:
+This runs PostgreSQL in Docker and starts the API, worker, and Vite hot reload locally. The root `.env` is used by both workspaces.
 
-```bash
-DATABASE_URL=postgresql://railway:change-me@localhost:5432/railway npm test
-```
+## Passenger behavior
 
-## Correctness model
+- Availability is public.
+- Clerk sign-in is required to book, waitlist, view, cancel, or accept an offer.
+- Bookings belong to the verified Clerk user ID; the frontend cannot choose the owner ID.
+- Cancellation requires account ownership or an authorized future admin-management endpoint.
+- NIC is not collected.
+- The QR contains only a random verification token. Viewing it does not authorize cancellation.
+- Staff with Viewer or Admin permission can scan and verify ticket status.
 
-Stations have a zero-based position on an ordered route. A booking occupies a half-open PostgreSQL range `[origin_position, destination_position)`. Thus Colombo–Kandy `[0,4)` and Kandy–Badulla `[4,8)` are adjacent and may use the same seat.
+## Segment concurrency model
 
-PostgreSQL's GiST exclusion constraint is the final concurrency authority:
+Stations have ordered positions. A booking occupies a half-open PostgreSQL range, such as Colombo–Kandy `[0,4)`. Kandy–Badulla `[4,8)` is adjacent and may use the same seat.
+
+Confirmed bookings and active waitlist holds share the same table and exclusion constraint:
 
 ```sql
-EXCLUDE USING gist (run_id WITH =, seat_id WITH =, segment WITH &&)
-WHERE (status = 'confirmed')
+EXCLUDE USING gist (
+  run_id WITH =,
+  seat_id WITH =,
+  segment WITH &&
+)
+WHERE (status IN ('held', 'confirmed'))
 ```
 
-Even if simultaneous clients both observe a seat as available, the database allows only one overlapping booking to commit. The API converts the losing constraint violation into `409 SEAT_CONFLICT`. Availability is advisory; booking insertion is authoritative.
+The availability response is advisory. The database is the final authority when simultaneous clients attempt to allocate overlapping legs.
 
-## Fare design
+## Whole-rupee fares
 
-Each coach has a configurable rate per kilometre in integer cents. Route-station rows contain the distance to the next station. The API recalculates and snapshots the fare inside the booking transaction, so a client cannot submit its own price and later price changes do not alter historical bookings.
+Coach templates store a potentially decimal LKR rate per kilometre. The API totals the selected route distances, multiplies by that rate, rounds once, and stores `fare_lkr` as an integer snapshot. The browser cannot submit its own fare.
 
-For clarity, the seed rates are illustrative rather than official Sri Lanka Railways fares.
+## Train configuration
 
-## API
+- Train templates describe reusable formations.
+- Coach templates belong to a train template and define code, class, reservation type, position, and rate.
+- Seat templates define seat number and map position.
+- Schedules combine route, train template, service code, time, weekdays, and effective dates.
+- Generating dated runs copies coach/seat snapshots into each departure so later template changes cannot damage existing bookings.
 
-- `GET /api/runs`
-- `GET /api/runs/:runId/stations`
-- `GET /api/availability?runId=&originId=&destinationId=`
-- `POST /api/bookings`
-- `GET /api/bookings/:reference`
+## Waitlist
 
-Example booking body:
+Waitlists are ordered by join time and ID. They target a run, segment, and class rather than one seat. When inventory is released, the worker offers the earliest compatible passenger an actual seat hold. Holds participate in the same exclusion constraint as bookings.
 
-```json
-{
-  "runId": 1,
-  "seatId": 1,
-  "originId": 1,
-  "destinationId": 5,
-  "passengerName": "Nimali Perera",
-  "passengerEmail": "nimali@example.com"
-}
+The default offer window is 60 minutes. An Admin can change it from 5 minutes through 24 hours; new offers read the current database setting. Expired offers release inventory and allow the worker to promote the next person. Entries are marked expired after departure rather than immediately deleted, preserving an audit trail.
+
+## Reliable email delivery
+
+Booking, cancellation, waitlist, and offer events are inserted into `email_outbox` in the same transaction as the business event. The worker sends them afterward and retries failures. Therefore, an email outage cannot roll back a valid booking. Resend idempotency keys reduce duplicate delivery during retries.
+
+## Useful routes
+
+- `/` — public availability and authenticated booking
+- `/account` — owned bookings, cancellation, waitlist, offers
+- `/admin` — role-protected operations
+- `/verify/:opaque-token` — staff ticket verification
+
+## Tests
+
+With PostgreSQL initialized:
+
+```bash
+DATABASE_URL=postgresql://railway:your-password@localhost:5432/railway npm test
 ```
 
-## Decisions and alternatives
+The integration test proves that only one simultaneous overlapping allocation commits and that adjacent legs can share the same seat.
 
-- **PostgreSQL exclusion constraint:** directly encodes the invariant. A seat-row `SELECT FOR UPDATE` was considered, but it unnecessarily serializes non-overlapping bookings. An application-only availability check is unsafe.
-- **Half-open ranges:** make adjacent journeys naturally non-overlapping and avoid station-boundary special cases.
-- **Service runs:** bookings belong to a dated departure, not just a route, so the same seat identity can be reused on future runs.
-- **Raw parameterized SQL:** keeps the core range and transactional behavior visible for this exercise. A larger system could wrap it with Drizzle while retaining the database constraint in a migration.
-- **Separate React and API services:** enables independent scaling and keeps PostgreSQL credentials out of the browser.
-- **Integer currency storage:** avoids floating-point rounding errors.
+## Production follow-ups
 
-## Production extensions
-
-Before launch, add authenticated administration, payment authorization/idempotency keys, PII encryption and retention rules, cancellation/refund policy, audit logs, rate limiting, observability, scheduled service creation, accessibility testing, and backups. A temporary inventory hold would be introduced during payment; expired holds should not block inventory.
-
+Add payment authorization and refunds, request idempotency keys for booking submission, Clerk webhook synchronization, PII retention policy, operational alerts, database backups, formal accessibility testing, official fare tables, and deployment-specific scheduled worker supervision before a real launch.
