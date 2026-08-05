@@ -1,6 +1,6 @@
 # Udarata Rail — segment-based seat booking
 
-Production-minded React, Express, and PostgreSQL implementation for independently selling non-overlapping legs of one physical train seat. It includes Clerk authentication, admin train/timetable configuration, cancellations, a fair waitlist with expiring offers, ticket email/QR delivery, whole-rupee LKR fares, and database-enforced concurrency safety.
+React, Express, and PostgreSQL implementation for independently selling non-overlapping legs of one physical train seat. It includes Clerk authentication, admin train/timetable configuration, cancellations, a fair waitlist with expiring offers, ticket email/QR delivery and database-enforced concurrency safety.
 
 ## What you must configure
 
@@ -51,11 +51,9 @@ PUBLIC_APP_URL=http://localhost:5173
 
 Never commit `.env`. The Vite publishable key is intentionally public; the Clerk secret and Resend key must only be supplied to the API/worker.
 
-## One-command startup
+## Startup
 
 Prerequisite: Docker Desktop or Docker Engine with Compose.
-
-This release replaces the original schema. If you ran an earlier version, recreate the local database once:
 
 ```bash
 docker compose down -v
@@ -108,10 +106,6 @@ WHERE (status IN ('held', 'confirmed'))
 ```
 
 The availability response is advisory. The database is the final authority when simultaneous clients attempt to allocate overlapping legs.
-
-## Whole-rupee fares
-
-Coach templates store a potentially decimal LKR rate per kilometre. The API totals the selected route distances, multiplies by that rate, rounds once, and stores `fare_lkr` as an integer snapshot. The browser cannot submit its own fare.
 
 ## Train configuration
 
