@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/react';
-import { AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { ApiError, request } from './api';
 
@@ -32,6 +32,28 @@ type Schedule = {
   templateName: string;
 };
 
+type DraftCoach = {
+  coachCode: string;
+  className: string;
+  reserved: boolean;
+  ratePerKmLkr: number;
+  displayOrder: number;
+  rows: number;
+  columns: number;
+  startAt: number;
+};
+
+const newCoach = (displayOrder: number): DraftCoach => ({
+  coachCode: `R${displayOrder}`,
+  className: 'Second Class',
+  reserved: true,
+  ratePerKmLkr: 9,
+  displayOrder,
+  rows: 6,
+  columns: 4,
+  startAt: 1,
+});
+
 const message = (e: unknown) =>
   e instanceof ApiError ? e.message : 'Something went wrong. Please try again.';
 
@@ -47,6 +69,8 @@ export function AdminPanel() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
+  const [templateName, setTemplateName] = useState('');
+  const [draftCoaches, setDraftCoaches] = useState<DraftCoach[]>([newCoach(1)]);
 
   async function call<T>(path: string, options: RequestInit = {}) {
     return request<T>(path, options, await getToken());
@@ -91,25 +115,47 @@ export function AdminPanel() {
       setSuccess(ok);
       form?.reset();
       await refresh();
+      return true;
     } catch (e) {
       setError(message(e));
+      return false;
     }
   }
 
   async function createTemplate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = e.currentTarget;
-    const d = new FormData(f);
-    
-    await perform(
+    const created = await perform(
       () =>
-        call('/api/admin/templates', {
+        call('/api/admin/templates/full', {
           method: 'POST',
-          body: JSON.stringify({ name: d.get('name') }),
+          body: JSON.stringify({ name: templateName, coaches: draftCoaches }),
         }),
-      'Train template created.',
-      f
+      'Complete train template and seat layout created.'
     );
+    if (created) {
+      setTemplateName('');
+      setDraftCoaches([newCoach(1)]);
+    }
+  }
+
+  function updateDraftCoach<K extends keyof DraftCoach>(
+    index: number,
+    key: K,
+    value: DraftCoach[K]
+  ) {
+    setDraftCoaches((current) =>
+      current.map((coach, coachIndex) =>
+        coachIndex === index ? { ...coach, [key]: value } : coach
+      )
+    );
+  }
+
+  function addDraftCoach() {
+    setDraftCoaches((current) => [...current, newCoach(current.length + 1)]);
+  }
+
+  function removeDraftCoach(index: number) {
+    setDraftCoaches((current) => current.filter((_, coachIndex) => coachIndex !== index));
   }
 
   async function createCoach(e: React.FormEvent<HTMLFormElement>) {
@@ -255,7 +301,7 @@ export function AdminPanel() {
       </div>
 
       <div className="admin-grid">
-        <div className="card admin-panel">
+        <div className="card admin-panel template-panel">
           <h2>Train formations</h2>
           {templates.map((t) => (
             <div className="template" key={t.id}>
@@ -269,12 +315,141 @@ export function AdminPanel() {
             </div>
           ))}
           {canEdit && (
-            <form onSubmit={createTemplate}>
+            <form className="template-builder" onSubmit={createTemplate}>
               <label>
-                New template name
-                <input name="name" required />
+                Template name
+                <input
+                  value={templateName}
+                  onChange={(event) => setTemplateName(event.target.value)}
+                  placeholder="Udarata Menike Weekend Formation"
+                  required
+                  minLength={2}
+                />
               </label>
-              <button>Create train template</button>
+
+              <div className="builder-heading">
+                <div>
+                  <b>Coach and seat configuration</b>
+                  <small>Add coaches in their physical train order.</small>
+                </div>
+                <button className="secondary compact" type="button" onClick={addDraftCoach}>
+                  <Plus /> Add coach
+                </button>
+              </div>
+
+              {draftCoaches.map((coach, index) => (
+                <fieldset className="coach-builder" key={index}>
+                  <legend>Coach {index + 1}</legend>
+                  {draftCoaches.length > 1 && (
+                    <button
+                      className="icon-button danger"
+                      type="button"
+                      onClick={() => removeDraftCoach(index)}
+                      aria-label={`Remove coach ${index + 1}`}
+                    >
+                      <Trash2 />
+                    </button>
+                  )}
+
+                  <div className="form-pair">
+                    <label>
+                      Coach code
+                      <input
+                        value={coach.coachCode}
+                        onChange={(event) => updateDraftCoach(index, 'coachCode', event.target.value)}
+                        placeholder="R1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Position in train
+                      <input
+                        type="number"
+                        min="1"
+                        value={coach.displayOrder}
+                        onChange={(event) => updateDraftCoach(index, 'displayOrder', Number(event.target.value))}
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-pair">
+                    <label>
+                      Travel class
+                      <input
+                        value={coach.className}
+                        onChange={(event) => updateDraftCoach(index, 'className', event.target.value)}
+                        placeholder="Second Class"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Fare per km (LKR)
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={coach.ratePerKmLkr}
+                        onChange={(event) => updateDraftCoach(index, 'ratePerKmLkr', Number(event.target.value))}
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={coach.reserved}
+                      onChange={(event) => updateDraftCoach(index, 'reserved', event.target.checked)}
+                    />
+                    Reserved coach with assigned seats
+                  </label>
+
+                  {coach.reserved && (
+                    <div className="seat-layout-fields">
+                      <label>
+                        Rows
+                        <input
+                          type="number"
+                          min="1"
+                          max="50"
+                          value={coach.rows}
+                          onChange={(event) => updateDraftCoach(index, 'rows', Number(event.target.value))}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Seats per row
+                        <input
+                          type="number"
+                          min="1"
+                          max="8"
+                          value={coach.columns}
+                          onChange={(event) => updateDraftCoach(index, 'columns', Number(event.target.value))}
+                          required
+                        />
+                      </label>
+                      <label>
+                        First seat number
+                        <input
+                          type="number"
+                          min="1"
+                          max="999"
+                          value={coach.startAt}
+                          onChange={(event) => updateDraftCoach(index, 'startAt', Number(event.target.value))}
+                          required
+                        />
+                      </label>
+                      <div className="seat-total">
+                        <span>Generated seats</span>
+                        <b>{coach.rows * coach.columns}</b>
+                      </div>
+                    </div>
+                  )}
+                </fieldset>
+              ))}
+
+              <button type="submit">Create complete train template</button>
             </form>
           )}
         </div>
@@ -305,7 +480,7 @@ export function AdminPanel() {
       {canEdit && (
         <div className="admin-grid">
           <div className="card admin-panel">
-            <h2>Add coach and seats</h2>
+            <h2>Add coach to an existing template</h2>
             <form onSubmit={createCoach}>
               <label>
                 Train template

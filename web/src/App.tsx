@@ -97,6 +97,63 @@ function Notice({
   );
 }
 
+function CoachSeatMap({
+  coachCode,
+  seats,
+  selected,
+  confirmation,
+  submitting,
+  onSelect,
+}: {
+  coachCode: string;
+  seats: Seat[];
+  selected?: Seat;
+  confirmation: string;
+  submitting: boolean;
+  onSelect: (seat: Seat) => void;
+}) {
+  const coachSeats = seats.filter((seat) => seat.coachCode === coachCode);
+  const columnCount = Math.max(...coachSeats.map((seat) => seat.columnNumber), 1);
+  const leftColumns = Math.ceil(columnCount / 2);
+  const rightColumns = columnCount - leftColumns;
+  const hasAisle = rightColumns > 0;
+  const gridTemplateColumns = [
+    `repeat(${leftColumns}, minmax(42px, 54px))`,
+    hasAisle ? '25px' : '',
+    rightColumns ? `repeat(${rightColumns}, minmax(42px, 54px))` : '',
+  ].filter(Boolean).join(' ');
+
+  return (
+    <div className="coach">
+      <h3>
+        Coach {coachCode} <small>{coachSeats[0]?.className}</small>
+      </h3>
+      <div className="seats" style={{ gridTemplateColumns }}>
+        {coachSeats.map((seat) => (
+          <React.Fragment key={seat.id}>
+            {hasAisle && seat.columnNumber === leftColumns + 1 && (
+              <span className="aisle" aria-hidden="true" />
+            )}
+            <button
+              className={`seat ${!seat.available ? 'unavailable' : ''} ${
+                selected?.id === seat.id && !confirmation ? 'selected' : ''
+              }`}
+              disabled={!seat.available || submitting}
+              onClick={() => onSelect(seat)}
+              aria-label={`Coach ${coachCode}, seat ${seat.seatNumber}, ${
+                seat.available ? 'available' : 'taken'
+              }`}
+            >
+              <Armchair />
+              <span>{seat.seatNumber}</span>
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Booking() {
   const { isSignedIn, getToken } = useAuth();
   const [runs, setRuns] = useState<Run[]>([]);
@@ -302,33 +359,15 @@ function Booking() {
               </div>
             </div>
             {coaches.map((coach) => (
-              <div className="coach" key={coach}>
-                <h3>
-                  Coach {coach}{' '}
-                  <small>
-                    {seats.find((s) => s.coachCode === coach)?.className}
-                  </small>
-                </h3>
-                <div className="seats">
-                  {seats
-                    .filter((s) => s.coachCode === coach)
-                    .map((s, i) => (
-                      <React.Fragment key={s.id}>
-                        {i % 4 === 2 && <span className="aisle" />}
-                        <button
-                          className={`seat ${!s.available ? 'unavailable' : ''} ${
-                            selected?.id === s.id && !confirmation ? 'selected' : ''
-                          }`}
-                          disabled={!s.available || submitting}
-                          onClick={() => setSelected(s)}
-                        >
-                          <Armchair />
-                          <span>{s.seatNumber}</span>
-                        </button>
-                      </React.Fragment>
-                    ))}
-                </div>
-              </div>
+              <CoachSeatMap
+                key={coach}
+                coachCode={coach}
+                seats={seats}
+                selected={selected}
+                confirmation={confirmation}
+                submitting={submitting}
+                onSelect={setSelected}
+              />
             ))}
           </div>
 

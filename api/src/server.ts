@@ -574,6 +574,96 @@ app.get('/api/admin/templates', viewer, async (_q, res) => {
   res.json(rows);
 });
 
+const fullTemplateInput = z.object({
+  name: z.string().trim().min(2).max(120),
+  coaches: z.array(z.object({
+    coachCode: z.string().trim().min(1).max(20),
+    className: z.string().trim().min(2).max(80),
+    reserved: z.boolean(),
+    ratePerKmLkr: z.number().nonnegative().max(10000),
+    displayOrder: z.number().int().positive(),
+    rows: z.number().int().min(1).max(50),
+    columns: z.number().int().min(1).max(8),
+    startAt: z.number().int().min(1).max(999),
+  })).min(1).max(20),
+});
+
+app.post('/api/admin/templates/full', admin, async (req, res) => {
+  const parsed = fullTemplateInput.safeParse(req.body);
+  if (!parsed.success) {
+    return fail(res, 422, 'INVALID_TEMPLATE', 'Add a name and at least one valid coach configuration.');
+  }
+
+  const input = parsed.data;
+  const { userId } = getAuth(req);
+  const codes = new Set(input.coaches.map((coach) => coach.coachCode.toUpperCase()));
+  const positions = new Set(input.coaches.map((coach) => coach.displayOrder));
+
+  if (codes.size !== input.coaches.length) {
+    return fail(res, 422, 'DUPLICATE_COACH_CODE', 'Coach codes must be unique within a train.');
+  }
+  if (positions.size !== input.coaches.length) {
+    return fail(res, 422, 'DUPLICATE_COACH_POSITION', 'Each coach needs a unique position in the train.');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const {
+      rows: [template],
+    } = await client.query(
+      `INSERT INTO train_templates(name) VALUES($1) RETURNING id::int, name, active`,
+      [input.name]
+    );
+
+    for (const coach of input.coaches) {
+      const {
+        rows: [savedCoach],
+      } = await client.query(
+        `INSERT INTO coach_templates
+          (train_template_id, coach_code, class_name, reserved, rate_per_km_lkr, display_order)
+         VALUES($1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [
+          template.id,
+          coach.coachCode.toUpperCase(),
+          coach.className,
+          coach.reserved,
+          coach.ratePerKmLkr,
+          coach.displayOrder,
+        ]
+      );
+
+      if (coach.reserved) {
+        await client.query(
+          `INSERT INTO seat_templates(coach_template_id, seat_number, row_number, column_number)
+           SELECT $1, lpad(($4 + (row_no - 1) * $3 + column_no - 1)::text, 2, '0'), row_no, column_no
+           FROM generate_series(1, $2) row_no
+           CROSS JOIN generate_series(1, $3) column_no`,
+          [savedCoach.id, coach.rows, coach.columns, coach.startAt]
+        );
+      }
+    }
+
+    await client.query(
+      `INSERT INTO audit_events(actor_clerk_user_id, action, entity_type, entity_id, after_data)
+       VALUES($1, 'create', 'train_template', $2, $3)`,
+      [userId, String(template.id), input]
+    );
+    await client.query('COMMIT');
+    res.status(201).json({ ...template, coachCount: input.coaches.length });
+  } catch (error: any) {
+    await client.query('ROLLBACK');
+    if (error?.code === '23505') {
+      return fail(res, 409, 'DUPLICATE_TEMPLATE', 'The template name, coach codes, positions, and seat numbers must be unique.');
+    }
+    console.error(error);
+    fail(res, 500, 'TEMPLATE_CREATE_FAILED', 'The template was not created. No partial configuration was saved.');
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/admin/templates', admin, async (req, res) => {
   const p = z.object({ name: z.string().trim().min(2).max(120) }).safeParse(req.body);
   if (!p.success) return fail(res, 422, 'INVALID_TEMPLATE', 'Enter a template name.');
